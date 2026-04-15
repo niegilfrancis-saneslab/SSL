@@ -15,6 +15,7 @@ import toml
 import cv2
 import math
 import os
+import tqdm
 
 
 # Functions to sort file names correctly
@@ -25,7 +26,7 @@ def natural_keys(text):
     return [atoi(c) for c in re.split(r'(\d+)', text)]
 
 # experiment_no
-experiment_no = 321
+experiment_no = 433
 samplerate = 125000
 camera_calibration_exp = 306
 path = f"D:/big_setup/experiment_{experiment_no}/concatenated_data_cam_mic_sync/ssl_data_path/"
@@ -103,9 +104,9 @@ tvec = np.load(f"D:/sleap-3D/session_{camera_calibration_exp}/cam_translation.np
 def audio_gen() -> Generator[list, None, None]:
       global samplerate
       for folder in glob.glob(path+"*"):
-        annotations = pd.read_csv(glob.glob(folder+"/*annotations.csv")[0])
+        annotations = pd.read_csv(glob.glob(folder+"/*annotations*.csv")[0])
         for index,row in annotations.iterrows():
-            if row["channel"] != -1 and row['name'] != "combined": 
+            if row["channel"] != -1 and row['name'] == "vox": 
                 audio_channel_list = glob.glob(folder+"/channel*.wav")
                 audio_channel_list.sort(key=natural_keys)
                 audio_data = []
@@ -124,7 +125,19 @@ def audio_gen() -> Generator[list, None, None]:
 
 def muse_pred(audio):
     """Run MUSE on audio"""
-    r_est, *_ = r_est_naive(
+    # r_est, *_ = r_est_naive(
+    #     v=audio.T,
+    #     fs=samplerate,
+    #     f_lo=2000,
+    #     f_hi=samplerate/2,
+    #     temp=21,
+    #     x_len=1.1684,
+    #     y_len=0.8636,
+    #     resolution=1e-3,        
+    #     mic_positions=mic_positions
+    # )
+
+    avg_est, r_ests, _ = r_est_jackknife(
         v=audio.T,
         fs=samplerate,
         f_lo=2000,
@@ -134,34 +147,47 @@ def muse_pred(audio):
         y_len=0.8636,
         resolution=1e-3,        
         mic_positions=mic_positions
-
-
     )
 
-    return r_est.squeeze()
+    r_ests_squeezed = [i.squeeze() for i in r_ests]
+
+    return avg_est.squeeze(), r_ests_squeezed
 
 
 def run():
 
 
         generator = audio_gen()
-        for audio,start,stop,folder in generator:
+        for audio,start,stop,folder in tqdm.tqdm(generator):
             # if int(folder.split('_')[-1]) < 91:
             #     continue
             try:
-                res_3d = muse_pred(audio)
+                avg_res_3d, res_3d_pts = muse_pred(audio)
             except Exception as e:
                 print(e)
                 continue
-            res_3d = np.concatenate([res_3d,[0.0]])
-            res_2d,_ = cv2.projectPoints(res_3d,
+            avg_res_3d = np.concatenate([avg_res_3d,[0.0]])
+            avg_res_2d,_ = cv2.projectPoints(avg_res_3d,
                                  rvec, tvec,
                                  cameraMatrix,
                                  distCoeffs)
+            
+            res_2d_pts = []
+            res_3d_pts_z = []
+            for val_3d in res_3d_pts:
+                val_3d = np.concatenate([val_3d,[0.0]])
+                val_2d,_ = cv2.projectPoints(val_3d,
+                                 rvec, tvec,
+                                 cameraMatrix,
+                                 distCoeffs)
+                res_2d_pts.append(val_2d)
+                res_3d_pts_z.append(val_3d)
+                
+
     
             results_path = folder + "/MUSE_pred.txt"
             with open(results_path, 'a') as file:
-                file.write(str(res_2d)+","+str(res_3d)+","+str(start)+","+str(stop)+","+folder+"\n")
+                file.write(str(avg_res_2d)+","+str(avg_res_3d)+","+str(res_2d_pts)+","+str(res_3d_pts_z)+","+str(start)+","+str(stop)+","+folder+"\n")
             #results = [res_2d,res_3d,start,stop,folder]
         
         '''
